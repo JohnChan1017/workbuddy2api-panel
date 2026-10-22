@@ -6,6 +6,7 @@
 package panel
 
 import (
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -36,9 +37,14 @@ func (p *Panel) saveConfig(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotImplemented, "config api not available")
 		return
 	}
-	raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "read body: "+err.Error())
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeErr(w, http.StatusRequestEntityTooLarge, "config request exceeds 1 MiB")
+		} else {
+			writeErr(w, http.StatusBadRequest, "read body: "+err.Error())
+		}
 		return
 	}
 	restartRequired, err := p.cfg.SaveConfig(raw)

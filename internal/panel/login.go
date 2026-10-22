@@ -163,6 +163,10 @@ func (p *Panel) loginPoll(w http.ResponseWriter, r *http.Request) {
 	}
 	p.loginMu.Lock()
 	sess, known := p.logins[state]
+	if known && time.Since(sess.created) >= loginTTL {
+		delete(p.logins, state)
+		known = false
+	}
 	p.loginMu.Unlock()
 	if !known {
 		writeErr(w, http.StatusNotFound, "unknown or expired state（请重新发起添加账号）")

@@ -18,6 +18,12 @@
 
 ---
 
+> **个人维护分支（2026-10-22，1.13.1-panel）**：从原仓库最后提交 `73a7560` 接续，首轮维护聚焦本地安全与稳定性。以下停止维护声明来自原维护者，保留作为项目背景。
+>
+> 本轮修复：首次生成配置不再输出密钥；配置创建或重新加载失败时停止启动，避免意外退回无鉴权运行；OAuth 轮询拒绝已过期的 15 分钟会话；账号导入限制整个请求为 32 MiB 并清理临时文件；配置保存超过 1 MiB 返回 413，避免截断后保存。所有验证使用测试数据与模拟上游，尚未验证真实账号与当前腾讯接口的可用性。
+>
+> 个人本机使用建议将 `listen` 设为 `127.0.0.1:7863`，设置非空、独立的 `api_key`，按需关闭 `schedule` 中的自动任务。已有配置中的空 `api_key` 仍表示关闭鉴权，示例中的 `test_key` 必须替换。本分支的维护不构成上游服务可用性或账号安全保证。
+
 > [!IMPORTANT]
 > **项目已停止维护（2026-10-21）**：后续不再更新代码、不跟进上游变化、不再处理新的 issue / PR。
 >
@@ -241,7 +247,7 @@ CI 会自动构建多架构镜像（`amd64` / `arm64`）并发布到 GHCR，`git
 ```bash
 # 1. 准备配置与数据目录
 mkdir -p auths data && cp config.example.json config.json
-#    建议编辑 config.json 设置 api_key（或留空由程序自动生成随机密钥）
+#    必须编辑 config.json，将示例 api_key 替换为自己的密钥；留空会关闭鉴权
 
 # 2. 拉取并运行
 docker run -d --name workbuddy2api \
@@ -268,7 +274,7 @@ cd workbuddy2api-panel
 
 # 2. 准备配置（compose 挂载此文件，缺失会导致容器启动失败）
 cp config.example.json config.json
-#    建议编辑 config.json 设置 api_key（或留空由程序自动生成随机密钥）
+#    必须编辑 config.json，将示例 api_key 替换为自己的密钥；留空会关闭鉴权
 
 # 3. 启动（首次会构建镜像，约 1-2 分钟）
 docker compose up -d --build
@@ -294,7 +300,7 @@ docker compose down             # 停止并移除容器（数据在 ./auths 与 
 # 1) 下载 Release 中的 wb2api.exe，或从源码构建
 go build -trimpath -ldflags="-s -w" -o wb2api.exe ./cmd/server
 
-# 2) 直接运行：首次启动自动生成 config.json（含随机 api_key，日志打印一次）
+# 2) 直接运行：配置文件不存在时自动生成 config.json（随机 api_key 仅存于该文件）
 .\wb2api.exe -config config.json
 
 # 3) 浏览器打开面板添加账号
