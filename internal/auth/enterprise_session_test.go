@@ -12,6 +12,23 @@ func mustJWT(t *testing.T, payload string) string {
 	return "hdr." + base64.RawURLEncoding.EncodeToString([]byte(payload)) + ".sig"
 }
 
+func TestEnterpriseSwitchSourceIsNotAccountIdentity(t *testing.T) {
+	a := &Auth{AccessToken: mustJWT(t, `{"token_source":"enterprise_switch"}`)}
+	if !a.HasEnterpriseSwitchSource() || a.IsEnterprise() {
+		t.Fatal("source marker must remain separate from enterprise identity")
+	}
+	a.Lock()
+	a.AccessToken = mustJWT(t, `{"token_source":"password"}`)
+	a.Unlock()
+	if a.HasEnterpriseSwitchSource() {
+		t.Fatal("source marker must reflect a replaced token")
+	}
+	a.EnterpriseID = "enterprise-test"
+	if a.HasEnterpriseSwitchSource() || !a.IsEnterprise() {
+		t.Fatal("enterprise identity must not manufacture a token-source marker")
+	}
+}
+
 // TestIsEnterpriseSession 企业切换会话判定：JWT token_source=enterprise_switch
 // 视为企业上下文；无该声明 / 非 JWT / 空 token 一律否（老凭证零回归）；
 // enterpriseId 非空短路为真（与 IsEnterprise 同口径）。
