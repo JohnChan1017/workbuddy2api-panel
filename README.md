@@ -300,6 +300,8 @@ docker compose down             # 停止并移除容器（数据在 ./auths 与 
 
 ### 方式二：Windows 单文件运行（无需 Docker）
 
+**双击启动**：将 `wb2api.exe` 放在项目根目录后，双击根目录的 `启动管理面板.cmd`。脚本在后台启动服务，等待面板就绪后交给默认浏览器打开 `管理面板 → 账号`，通常会新增标签页（具体取决于浏览器设置）。服务已运行时直接打开面板，重复双击不会重复启动同一目录的服务。面板地址随 `config.json` 的 `listen` 配置生成；后台服务在关闭标签页后继续运行。启动日志位于 `data/launcher.stdout.log` 和 `data/launcher.stderr.log`，启动失败时窗口会保留错误信息。脚本使用根目录现有的程序；更新源码后需要另行重新构建程序。
+
 ```powershell
 # 1) 下载 Release 中的 wb2api.exe，或从源码构建
 go build -trimpath -ldflags="-s -w" -o wb2api.exe ./cmd/server
