@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
 )
 
 // acceptBatchGap 批量接受的批间节流（对齐脚本 1.05s 口径，避免上游风控）。
@@ -52,7 +53,11 @@ func (p *Panel) accountTasks(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tasks": tasks})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "tasks": tasks,
+		"enterprise_account":      a.IsEnterprise(),
+		"automation_block_reason": growthAutomationBlockReason(a),
+	})
 }
 
 // accountTaskAccept 接受任务（报名；幂等）。
@@ -69,12 +74,20 @@ func (p *Panel) accountTaskAccept(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "task_codes required")
 		return
 	}
+	body.TaskCodes = uniqueTaskCodes(body.TaskCodes)
+	if len(body.TaskCodes) == 0 {
+		writeErr(w, http.StatusBadRequest, "task_codes required")
+		return
+	}
 	if err := p.cfg.Upstream.AcceptTasks(a, body.TaskCodes); err != nil {
 		writeErr(w, http.StatusBadGateway, "accept: "+err.Error())
 		return
 	}
-	log.Printf("panel: 接受任务 uid=%s codes=%v", uid, body.TaskCodes)
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	result := taskAcceptanceResult{}
+	result.verify(body.TaskCodes, func() ([]upstream.Task, error) { return p.cfg.Upstream.ListTasks(a) })
+	result.finish()
+	log.Printf("panel: 接受任务 uid=%s 确认=%d 未确认=%d", uid, result.Accepted, len(result.Unconfirmed))
+	writeJSON(w, http.StatusOK, result)
 }
 
 // taskAcceptAll 接受该账号全部尚未接受的任务（跳过已 accepted/claimed 的）。
@@ -94,59 +107,42 @@ func (p *Panel) taskAcceptAll(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, "list tasks: "+err.Error())
 		return
 	}
+	result := taskAcceptanceResult{}
 	var codes []string
+	seen := map[string]bool{}
 	for _, t := range tasks {
-		// 跳过已完成/已领取/已接受的；locked 的也不碰（上游未开放）。
-		if t.Claimed || t.Locked || t.AcceptStatus == "accepted" || t.AcceptStatus == "completed" {
+		if seen[t.TaskCode] {
 			continue
 		}
-		codes = append(codes, t.TaskCode)
-	}
-	if len(codes) == 0 {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "accepted": 0, "message": "所有任务均已接受"})
-		return
-	}
-	const batch = 20
-	accepted := 0
-	var failed []string
-	for i := 0; i < len(codes); i += batch {
-		end := i + batch
-		if end > len(codes) {
-			end = len(codes)
+		seen[t.TaskCode] = true
+		if !t.Locked && !taskIsAccepted(t) {
+			codes = append(codes, t.TaskCode)
 		}
-		if err := p.cfg.Upstream.AcceptTasks(a, codes[i:end]); err != nil {
-			log.Printf("panel: 批量接受失败 uid=%s codes=%v err=%v", uid, codes[i:end], err)
-			failed = append(failed, codes[i:end]...)
-			continue
-		}
-		accepted += end - i
-		time.Sleep(acceptBatchGap) // 批间节流（对齐脚本 1.05s 口径）
 	}
+	result.submitBatches(uniqueTaskCodes(codes),
+		func(codes []string) error { return p.cfg.Upstream.AcceptTasks(a, codes) },
+		func() ([]upstream.Task, error) { return p.cfg.Upstream.ListTasks(a) })
 	// 小程序口径任务单独批量接受（默认列表不含 mp 码，accept 也要求 mp 头）。
 	if mpTasks, mpErr := p.cfg.Upstream.ListTasksMP(a); mpErr == nil {
 		var mpCodes []string
 		for _, t := range mpTasks {
-			if t.Claimed || t.Locked || t.AcceptStatus == "accepted" || t.AcceptStatus == "completed" {
+			if seen[t.TaskCode] {
 				continue
 			}
-			mpCodes = append(mpCodes, t.TaskCode)
-		}
-		if len(mpCodes) > 0 {
-			if err := p.cfg.Upstream.AcceptTasksMP(a, mpCodes); err != nil {
-				log.Printf("panel: mp 批量接受失败 uid=%s err=%v", uid, err)
-				failed = append(failed, mpCodes...)
-			} else {
-				accepted += len(mpCodes)
-				time.Sleep(acceptBatchGap)
+			seen[t.TaskCode] = true
+			if !t.Locked && !taskIsAccepted(t) {
+				mpCodes = append(mpCodes, t.TaskCode)
 			}
 		}
+		result.submitBatches(uniqueTaskCodes(mpCodes),
+			func(codes []string) error { return p.cfg.Upstream.AcceptTasksMP(a, codes) },
+			func() ([]upstream.Task, error) { return p.cfg.Upstream.ListTasksMP(a) })
+	} else {
+		result.VerificationErrors = append(result.VerificationErrors, "小程序任务列表查询失败")
 	}
-	log.Printf("panel: 全部接受 uid=%s 接受=%d 失败=%d", uid, accepted, len(failed))
-	resp := map[string]any{"ok": true, "accepted": accepted, "failed": failed}
-	if len(failed) > 0 {
-		resp["message"] = "部分任务接受失败（上游拒绝），可重试"
-	}
-	writeJSON(w, http.StatusOK, resp)
+	result.finish()
+	log.Printf("panel: 全部接受 uid=%s 确认=%d 未确认=%d 提交失败=%d", uid, result.Accepted, len(result.Unconfirmed), len(result.Failed))
+	writeJSON(w, http.StatusOK, result)
 }
 
 // accountTaskClaim 领取任务奖励（未达标时上游返回业务错误，原样透出给前端提示）。

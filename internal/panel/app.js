@@ -1622,12 +1622,7 @@ $('btnTaskAcceptAll').onclick = async () => {
   btn.disabled = true; btn.textContent = '接受中…';
   try {
     const r = await api('accounts/' + encodeURIComponent(taskUID) + '/tasks/accept_all', { method: 'POST' });
-    const n = r.accepted || 0;
-    if (r.failed && r.failed.length) {
-      toast(`已接受 ${n} 个，${r.failed.length} 个被上游拒绝（可重试）`, 'err');
-    } else {
-      toast(n ? `已接受 ${n} 个任务` : (r.message || '所有任务均已接受'), 'ok');
-    }
+    showTaskAcceptance(r);
   } catch (e) { toast(e.message, 'err'); }
   finally { btn.disabled = false; btn.textContent = '全部接受'; loadTasks(); }
 };
@@ -1649,17 +1644,35 @@ $('btnTaskAutoAll').onclick = async () => {
   finally { btn.disabled = false; btn.textContent = '一键完成可自动任务'; loadTasks(); }
 };
 
+function showTaskAcceptance(r) {
+  const verified = r.verified === true;
+  toast(r.message || (verified ? `已确认接受 ${r.accepted || 0} 个任务` : '请求已提交，但接受状态尚未确认，请刷新任务状态'), verified ? 'ok' : 'err');
+}
+
+let taskLoadSequence = 0;
 async function loadTasks() {
   if (!taskUID) return;
+  const uid = taskUID, sequence = ++taskLoadSequence;
   const st = $('taskState'), tb = $('taskTable');
+  const notice = $('taskAutomationNotice'), autoButton = $('btnTaskAutoAll');
+  notice.hidden = true;
+  autoButton.disabled = true;
+  autoButton.title = '正在查询任务状态';
   st.hidden = false;
   st.className = 'state';
   st.innerHTML = '<span class="dots">查询中</span>';
   tb.hidden = true;
   try {
-    const d = await api('accounts/' + encodeURIComponent(taskUID) + '/tasks');
+    const d = await api('accounts/' + encodeURIComponent(uid) + '/tasks');
+    if (taskUID !== uid || sequence !== taskLoadSequence) return;
+    const automationBlocked = Boolean(d.automation_block_reason);
+    notice.hidden = !automationBlocked;
+    notice.textContent = d.automation_block_reason || '';
+    autoButton.disabled = automationBlocked;
+    autoButton.title = d.automation_block_reason || '';
     const list = d.tasks || [];
     if (!list.length) {
+      autoButton.disabled = true;
       st.className = 'state';
       st.textContent = '该账号暂无任务';
       return;
@@ -1675,15 +1688,17 @@ async function loadTasks() {
       if (t.energy) parts.push('+' + t.energy + ' 能');
       if (t.reward_buddy) parts.push('Buddy');
       const reward = parts.length ? parts.join(' ') : '—';
+      const accepted = ['accepted', 'in_progress', 'completed', 'claimed'].includes(t.accept_status);
       const badge = t.claimed ? '<span class="tag ok">已领取</span>'
         : t.claimable ? '<span class="tag warn">可领取</span>'
         : t.locked ? '<span class="tag mute">未解锁</span>'
-        : t.accept_status === 'accepted' ? '<span class="tag mute">进行中</span>'
+        : t.accept_status === 'completed' ? '<span class="tag ok">已完成</span>'
+        : accepted ? '<span class="tag mute">进行中</span>'
         : '<span class="tag mute">未接受</span>';
       const acted = t.claimed || t.locked ? ''
         : t.claimable ? '<button class="xs primary" data-t="claim" data-c="' + esc(t.task_code) + '">领取</button>'
-        : AUTO_TASKS[t.task_code] ? '<button class="xs primary" data-t="auto" data-c="' + esc(t.task_code) + '" title="' + esc(AUTO_TASKS[t.task_code]) + '">一键完成</button>'
-        : t.accept_status === 'accepted' ? ''
+        : !automationBlocked && t.accept_status !== 'completed' && AUTO_TASKS[t.task_code] ? '<button class="xs primary" data-t="auto" data-c="' + esc(t.task_code) + '" title="' + esc(AUTO_TASKS[t.task_code]) + '">一键完成</button>'
+        : accepted ? ''
         : '<button class="xs" data-t="accept" data-c="' + esc(t.task_code) + '">接受</button>';
       // 操作指引（description/task_desc）挂 title 提示：如何完成交给用户看
       const tip = [t.title, t.task_desc || t.description, t.jump_url ? '跳转：' + t.jump_url : ''].filter(Boolean).join('\n');
@@ -1697,6 +1712,7 @@ async function loadTasks() {
     st.hidden = true;
     tb.hidden = false;
   } catch (e) {
+    if (taskUID !== uid || sequence !== taskLoadSequence) return;
     st.className = 'state err';
     st.textContent = e.message;
   }
@@ -1729,9 +1745,13 @@ $('taskBody').addEventListener('click', async ev => {
     } else {
       const path = 'accounts/' + encodeURIComponent(taskUID) + '/tasks/' + (kind === 'claim' ? 'claim' : 'accept');
       const body = kind === 'claim' ? { task_code: code } : { task_codes: [code] };
-      await api(path, { method: 'POST', body: JSON.stringify(body) });
-      toast(kind === 'claim' ? '已领取奖励' : '已接受任务', 'ok');
-      if (kind === 'claim') loadOverview(true);
+      const r = await api(path, { method: 'POST', body: JSON.stringify(body) });
+      if (kind === 'claim') {
+        toast(r.message || (r.already_claimed ? '该奖励此前已领取' : '已领取奖励'), 'ok');
+        loadOverview(true);
+      } else {
+        showTaskAcceptance(r);
+      }
     }
   } catch (e) { toast(e.message, 'err'); }
   finally { loadTasks(); }
