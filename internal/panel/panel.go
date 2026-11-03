@@ -278,8 +278,8 @@ func (p *Panel) overview(w http.ResponseWriter, r *http.Request) {
 		"model_locks": p.cfg.Pool.ModelLockView(),
 		// 到期提醒快照的节奏与年龄：界面轮询是 5 秒级，但卡片数据只随余额后台刷新
 		// 更新（默认每 5 分钟）——把这两个数透出，前端才能如实标注「x 分钟前更新」。
-		"balance_refresh_sec":    p.balanceRefreshSec(),
-		"balance_refreshed_at":   p.balanceRefreshedAt(),
+		"balance_refresh_sec":  p.balanceRefreshSec(),
+		"balance_refreshed_at": p.balanceRefreshedAt(),
 	})
 }
 
@@ -621,32 +621,45 @@ func (p *Panel) accountCheckin(w http.ResponseWriter, r *http.Request) {
 	}
 	checkinMsg := ""
 	checkinDone := false
+	checkinStatus := "failed"
+	upstreamStatus := 0
 	// 企业版无签到体系（上游 400 code 10001「企业账号不支持该操作」）：不发起该调用，
 	// 端点退化为「刷新额度」——企业额度走 get-enterprise-user-usage 口径（见 upstream）。
 	// 前端对企业号不渲染「签到」按钮；此处是 API 侧防御（外部脚本/旧缓存前端仍可能调用）。
 	if a.IsEnterprise() {
 		checkinMsg = "企业账号无签到体系（已跳过签到，仅刷新额度）"
+		checkinStatus = "skipped"
 	} else if err := p.cfg.Upstream.DailyCheckin(a); err != nil {
-		checkinMsg = err.Error() // "今天已签到"等业务错误照常查余额
+		checkinMsg, upstreamStatus = checkinErrorMessage(err)
 		// 幂等拒绝同样是「今日已签」，标记后按钮显示「已签」。
-		if upstream.IsAlreadyCheckin(err) {
+		if (upstreamStatus == http.StatusOK || upstreamStatus == http.StatusBadRequest || upstreamStatus == http.StatusConflict) && upstream.IsAlreadyCheckin(err) {
 			p.cfg.Pool.NoteCheckinDone(uid)
 			checkinDone = true
+			checkinStatus = "already_done"
 		}
 	} else {
 		p.cfg.Pool.NoteCheckinDone(uid)
 		checkinDone = true
+		checkinStatus = "done"
 	}
-	resp := map[string]any{"ok": true, "checkin_done": checkinDone}
+	resp := map[string]any{
+		"ok": checkinDone || checkinStatus == "skipped", "checkin_done": checkinDone,
+		"checkin_status": checkinStatus,
+	}
+	if upstreamStatus != 0 {
+		resp["checkin_upstream_status"] = upstreamStatus
+	}
 	if a.IsEnterprise() {
 		resp["enterprise"] = true
 	}
 	if checkinMsg != "" {
 		resp["checkin_message"] = checkinMsg
 	}
+	log.Printf("panel: checkin uid=%s status=%s upstream_http=%d", uid, checkinStatus, upstreamStatus)
 	remain, total, expiring, earliestAt, earliestRemaining, buckets, err := p.cfg.Upstream.UserResourceSnapshot(a, p.expiringSoonWindow())
 	if err != nil {
-		resp["balance_error"] = err.Error()
+		balanceMsg, _ := checkinErrorMessage(err)
+		resp["balance_error"] = balanceMsg
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}

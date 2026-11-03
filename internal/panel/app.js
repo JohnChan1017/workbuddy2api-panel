@@ -534,6 +534,18 @@ async function loadOverview(quiet) {
   } catch (e) { if (!quiet) toast(e.message, 'err'); }
 }
 
+function showCheckinResult(r) {
+  const balance = r.credits != null ? '，积分 ' + r.credits + (r.credits_total > 0 ? '/' + r.credits_total : '') : '';
+  if (r.checkin_done === true) {
+    const message = (r.checkin_status === 'already_done' ? '今日已签到' : '签到成功') + balance;
+    toast(message + (r.balance_error ? '；余额刷新失败：' + r.balance_error : ''), r.balance_error ? 'err' : 'ok');
+  } else if (r.enterprise === true && r.checkin_status === 'skipped') {
+    toast((r.checkin_message || '已跳过签到') + balance + (r.balance_error ? '；余额刷新失败：' + r.balance_error : ''), r.balance_error ? 'err' : '');
+  } else {
+    toast('签到失败：' + (r.checkin_message || '上游未确认签到成功') + (r.credits != null ? '；余额已刷新' + balance : '') + (r.balance_error ? '；余额刷新失败：' + r.balance_error : ''), 'err');
+  }
+}
+
 $('accBody').addEventListener('click', async ev => {
   const b = ev.target.closest('button[data-a]');
   if (!b) return;
@@ -544,7 +556,7 @@ $('accBody').addEventListener('click', async ev => {
   try {
     if (a === 'checkin') {
       const r = await api('accounts/' + encodeURIComponent(u) + '/checkin', { method: 'POST' });
-      toast('签到完成' + (r.credits != null ? '，积分 ' + r.credits + (r.credits_total > 0 ? '/' + r.credits_total : '') : '') + (r.checkin_message ? '（' + r.checkin_message + '）' : ''), 'ok');
+      showCheckinResult(r);
     } else if (a === 'balance') {
       const r = await api('accounts/' + encodeURIComponent(u) + '/balance', { method: 'POST' });
       toast('余额已更新：' + r.credits + (r.credits_total > 0 ? ' / ' + r.credits_total : ''), 'ok');
